@@ -1,36 +1,38 @@
 # KikeFight 🥷
 
-2D pixel-art fighting game starring **Kike** – the UA Ninja.
+Ahora tienes una versión para jugar **directamente en la web** (sin Python).
 
-## Run
+## Jugar en web
+
+1. Entra en la carpeta del proyecto.
+2. Levanta un servidor estático:
 
 ```bash
-pip install pygame
-python main.py
+python -m http.server 8000
 ```
 
-## Controls
+3. Abre en tu navegador: <http://localhost:8000/web/>
 
-| Action | Player 1 | Player 2 |
-|---|---|---|
-| Move | A / D | ← / → |
-| Jump | W | ↑ |
-| Light Attack | U | KP1 |
-| Heavy Attack | I | KP3 |
-| **Furniture Throw** | **O** | **KP2** |
-| Block | P | KP0 |
+## Controles (Jugador)
 
-## Characters
+| Acción | Tecla |
+|---|---|
+| Mover | A / D |
+| Saltar | W |
+| Ataque ligero | U |
+| Ataque pesado | I |
+| Especial | O |
+| Bloquear | P |
 
-- **Kike (UA Ninja)** – Dual katanas, crescent slashes, furniture-hurling special
-- **Blue Fighter** – Classic karate brawler
+## Qué incluye la versión web
 
-## Features
+- Lucha 1vs1 con barra de vida y temporizador.
+- Ataques ligero/pesado/especial.
+- La enemiga es quien vuela y lanza muebles como especial.
+- IA enemiga para jugar en modo un jugador.
+- Rondas al mejor de 3.
+- Pantallas de menú, fin de ronda y campeón.
 
-- Full animation state machine (idle, walk, jump, light/heavy attack, special, block, hit, dead)
-- Combo counter
-- Furniture projectile (chair, table, barrel, vase)
-- Cherry blossom dojo background
-- Screen shake on heavy hits
-- Hit spark effects
-- Best-of-3 rounds with timer
+## Nota
+
+El código original en Python/Pygame se mantiene en la raíz (`main.py`, `fighter.py`, etc.) como referencia.
