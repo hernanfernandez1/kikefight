@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>KikeFight Web</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <h1>KikeFight Web 🥷</h1>
+      <p class="hint">Pulsa <strong>Enter</strong> para empezar. Primer jugador en ganar 2 rondas.</p>
+      <canvas id="game" width="1280" height="720"></canvas>
+      <section class="controls">
+        <h2>Controles</h2>
+        <p><strong>P1:</strong> A/D mover, W saltar, U ligero, I pesado, O especial, P bloquear</p>
+        <p><strong>P2:</strong> ←/→ mover, ↑ saltar, Numpad1 ligero, Numpad3 pesado, Numpad2 especial, Numpad0 bloquear</p>
+      </section>
+    </main>
+    <script type="module" src="game.js"></script>
+  </body>
+</html>
