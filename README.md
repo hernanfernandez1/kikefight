@@ -1,6 +1,6 @@
 # KikeFight 🥷
 
-Ahora tienes una versión para jugar **directamente en la web** (sin Python).
+Versión web rehecha desde cero con estética pixel retro tipo boss-fight: **Kike vs La Baronesa del Mueble**.
 
 ## Jugar en web
 
@@ -13,25 +13,32 @@ python -m http.server 8000
 
 3. Abre en tu navegador: <http://localhost:8000/web/>
 
-## Controles (Jugador)
+## Controles
 
 | Acción | Tecla |
 |---|---|
 | Mover | A / D |
 | Saltar | W |
-| Ataque ligero | U |
-| Ataque pesado | I |
-| Especial | O |
-| Bloquear | P |
+| Ataque rápido | J |
+| Ataque pesado | K |
+| Iniciar/Reintentar | Enter |
 
-## Qué incluye la versión web
+## Estética y assets (tus imágenes)
 
-- Lucha 1vs1 con barra de vida y temporizador.
-- Ataques ligero/pesado/especial.
-- La enemiga es quien vuela y lanza muebles como especial.
-- IA enemiga para jugar en modo un jugador.
-- Rondas al mejor de 3.
-- Pantallas de menú, fin de ronda y campeón.
+El juego ya está preparado para usar recortes y fondos en estilo pixel-art. Para aplicar exactamente la estética que compartiste, coloca estos archivos:
+
+- `web/assets/scene_ref.png` → fondo/escena (dojo)
+- `web/assets/kike_poses.png` → sheet con poses de Kike
+- `web/assets/baronesa.png` → recorte de la jefa flotante
+
+Si no existen esos archivos, el juego usa fallback dibujado por canvas para que igual se pueda jugar.
+
+## Qué incluye esta versión
+
+- Combate 1 jugador vs boss.
+- Boss enemiga flotante que tira muebles.
+- HUD retro: vida P1, vida boss, combo y contador de muebles.
+- Ronda con timer y pantalla de resultado.
 
 ## Nota
 
