@@ -2,63 +2,38 @@
   color-scheme: dark;
 }
 
-* {
-  box-sizing: border-box;
-}
-
 body {
   margin: 0;
-  min-height: 100vh;
-  background: radial-gradient(circle at top, #3d0f26, #14080f 58%);
-  color: #f8f0ce;
-  font-family: 'Press Start 2P', system-ui, sans-serif;
+  font-family: Inter, system-ui, Arial, sans-serif;
+  background: #0f0a08;
+  color: #f4ead0;
 }
 
 .layout {
-  width: min(1320px, 100%);
+  max-width: 1320px;
   margin: 0 auto;
-  padding: 18px;
+  padding: 16px;
 }
 
 h1 {
-  margin: 0;
-  font-size: 1.4rem;
-  line-height: 1.5;
+  margin: 0 0 8px;
 }
 
 .hint {
-  margin: 10px 0 14px;
-  opacity: 0.88;
-  font-size: 0.7rem;
-  line-height: 1.8;
+  margin: 0 0 12px;
+  opacity: 0.9;
 }
 
 canvas {
   width: 100%;
   height: auto;
-  border: 4px solid #d1b272;
-  border-radius: 8px;
-  image-rendering: pixelated;
-  background: #200c13;
-  box-shadow: 0 0 0 4px #2f1320, 0 20px 44px #00000088;
+  border: 2px solid #5f3f24;
+  border-radius: 10px;
+  background: #23150e;
+  display: block;
 }
 
 .controls {
-  margin-top: 14px;
-  font-size: 0.62rem;
-  line-height: 1.8;
-}
-
-.controls h2 {
-  font-size: 0.8rem;
-  margin: 0 0 10px;
-}
-
-.assets-note {
-  opacity: 0.8;
-}
-
-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  color: #ffcf7b;
+  margin-top: 12px;
+  font-size: 0.95rem;
 }
