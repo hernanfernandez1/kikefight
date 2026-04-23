@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KikeFight</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0607;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;font-family:sans-serif}
+canvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
+#loader{position:fixed;inset:0;background:#0a0607;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#f0e6d2;z-index:10}
+#loader h1{font-size:56px;color:#ffd428;text-shadow:3px 3px 0 #000;margin-bottom:20px;letter-spacing:4px}
+#loader p{font-size:20px;opacity:.7}
+#bar-wrap{width:300px;height:12px;background:#222;border:2px solid #555;margin-top:24px;border-radius:6px;overflow:hidden}
+#bar{height:100%;background:#32d23c;width:0%;transition:width .3s;border-radius:4px}
+#hint{font-size:14px;opacity:.5;margin-top:14px;text-align:center}
+</style>
+</head>
+<body>
+
+<div id="loader">
+  <h1>KIKEFIGHT</h1>
+  <p id="load-msg">Cargando assets…</p>
+  <div id="bar-wrap"><div id="bar"></div></div>
+  <p id="hint">Coloca <b>kike_sheet.png</b> y <b>kurenai_sheet.png</b> en la carpeta <b>assets/</b></p>
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+'use strict'
+// ══════════════════════════════════════════════════════════════
+//  CONSTANTS
+// ══════════════════════════════════════════════════════════════
+const W=1280,H=720,FLOOR_Y=540,GRAV=0.9,SPD=6,JMP=-22
+const ROUND_S=99,MAX_HP=100,COMBO_WIN=1800
+const SCALE=3.2          // sprite scale-up factor
+const BG_THRESH=28       // darkness threshold for sprite detection
+const MIN_SP_W=26        // min sprite width  (filters out letter-width groups)
+const MIN_SP_H=34        // min sprite height (filters out one-line text rows)
+const MAX_ASPECT=4.5     // w/h ratio limit  (filters out wide horizontal text labels)
+
+const DMG={light:7,heavy:14,special:22,block:2}
+const ANIM_MS={idle:170,walk:105,jump:100,light:80,heavy:90,special:100,block:120,hit:110,dead:130}
+// animation frame counts will be discovered from detected sprites
+
+// state → priority (higher = harder to interrupt)
+const PRIO={idle:0,walk:0,jump:1,light:3,heavy:4,special:5,block:2,hit:6,dead:99}
+// which game-frame indices have an active hitbox [lo,hi]
+const ACTIVE={light:[1,2],heavy:[1,3],special:[2,4]}
+
+// Colours
+const C={
+  hpBg:'#3c0a0a',hpGrn:'#32d23c',hpRed:'#d22828',hpGld:'#c8a01e',
+  frame:'#1e140a',cmb:'#50c8ff',txt:'#f0e6d2',
+  kiFx:'#50ff80',purpFx:'#c050ff',hitLight:'#ffe050',hitHeavy:'#ff8020'
+}
+
+// ══════════════════════════════════════════════════════════════
+//  CANVAS
+// ══════════════════════════════════════════════════════════════
+const canvas=document.getElementById('c')
+const ctx=canvas.getContext('2d')
+canvas.width=W; canvas.height=H
+ctx.imageSmoothingEnabled=false
+function resize(){
+  const s=Math.min(innerWidth/W,innerHeight/H)
+  canvas.style.width=(W*s)+'px'; canvas.style.height=(H*s)+'px'
+}
+addEventListener('resize',resize); resize()
+
+// ══════════════════════════════════════════════════════════════
+//  SPRITE AUTO-DETECTOR
+//  Scans a loaded Image for non-background pixel groups.
+//  Returns: Array of rows, each row = Array of {x,y,w,h}.
+// ══════════════════════════════════════════════════════════════
+function detectSpriteGroups(img){
+  const tw=img.naturalWidth||img.width, th=img.naturalHeight||img.height
+  const tc=document.createElement('canvas'); tc.width=tw; tc.height=th
+  const tx=tc.getContext('2d'); tx.drawImage(img,0,0)
+  const px=tx.getImageData(0,0,tw,th).data
+
+  const active=(x,y)=>Math.max(px[(y*tw+x)*4],px[(y*tw+x)*4+1],px[(y*tw+x)*4+2])>BG_THRESH
+
+  // active rows
+  const rowA=new Uint8Array(th)
+  for(let y=0;y<th;y++) for(let x=0;x<tw;x++) if(active(x,y)){rowA[y]=1;break}
+
+  // row → horizontal bands
+  const bands=[]
+  let bs=-1
+  for(let y=0;y<=th;y++){
+    if(rowA[y]&&bs<0) bs=y
+    if(!rowA[y]&&bs>=0){bands.push([bs,y-1]);bs=-1}
+  }
+
+  const result=[]
+  for(const[y1,y2]of bands){
+    const bh=y2-y1+1
+    if(bh<MIN_SP_H) continue                   // skip thin text-label rows
+
+    // active columns inside this band
+    const colA=new Uint8Array(tw)
+    for(let x=0;x<tw;x++) for(let y=y1;y<=y2;y++) if(active(x,y)){colA[x]=1;break}
+
+    // column → sprite groups
+    const row=[]
+    let cs=-1
+    for(let x=0;x<=tw;x++){
+      if(colA[x]&&cs<0) cs=x
+      if(!colA[x]&&cs>=0){
+        const gw=x-cs
+        if(gw>=MIN_SP_W && gw/bh<=MAX_ASPECT) row.push({x:cs,y:y1,w:gw,h:bh})
+        cs=-1
+      }
+    }
+    if(row.length) result.push(row)
+  }
+  return result          // [ [{x,y,w,h},…], … ]
+}
+
+// ── Map detected groups → named animation frames ──────────────
+// Layout for BOTH sheets (same structure):
+//   groups[0]  = PERSONAJE row   : idle×2, walk×2, guard×1
+//   groups[1]  = MOVEMENT row    : run×2, jump×1, crouch×1, hit×1, ko×1
+//   groups[2…] = ATTACK rows (left half=normales, right half=especiales)
+//     row+0  PUÑO  /  SPECIAL_1
+//     row+1  KICK  /  SPECIAL_2
+//     row+2  SLASH_H / SPECIAL_3
+//     row+3  SLASH_V / SPECIAL_4  (Kike) / last special (Kurenai)
+function mapFrames(groups, splitX){
+  const f={}
+  // ── basic states ──────────────────────────────────────────
+  if(groups[0]){
+    const r=groups[0]
+    f.idle  = toF(r.slice(0,2))
+    f.walk  = toF(r.slice(2,4))
+    f.guard = toF(r.slice(4,5))
+    if(!f.guard.length&&r[4]) f.guard=toF([r[4]])
+  }
+  // ── movement ──────────────────────────────────────────────
+  if(groups[1]){
+    const r=groups[1]
+    f.run   = toF(r.slice(0,2))
+    f.jump  = toF(r.slice(2,3))
+    f.crouch= toF(r.slice(3,4))
+    f.hit   = toF(r.slice(4,5))
+    f.ko    = toF(r.slice(5,6))
+    if(!f.ko.length&&r.length>5) f.ko=toF([r[r.length-1]])
+  }
+  // ── attacks (split left/right by splitX) ──────────────────
+  const atkNames =['punch','kick','slash_h','slash_v']
+  const spNames  =['sp1','sp2','sp3','sp4']
+  for(let i=0;i<4;i++){
+    const grp=groups[2+i]; if(!grp) continue
+    const left =grp.filter(s=>s.x+s.w/2 < splitX)
+    const right=grp.filter(s=>s.x+s.w/2 >= splitX)
+    f[atkNames[i]]=toF(left)
+    f[spNames[i]] =toF(right)
+  }
+  return f
+}
+function toF(arr){ return arr.map(s=>[s.x,s.y,s.w,s.h]) }
+
+// ── Draw one frame from a sprite sheet ────────────────────────
+function drawFrame(img,frame,cx,cy,scale,flip,tint=null){
+  const[sx,sy,sw,sh]=frame
+  const dw=sw*scale, dh=sh*scale
+  const dx=cx-dw/2, dy=cy-dh   // anchor: centre-bottom
+
+  ctx.save()
+  ctx.imageSmoothingEnabled=false
+  if(flip){
+    ctx.translate(dx+dw,dy); ctx.scale(-1,1)
+    ctx.drawImage(img,sx,sy,sw,sh,0,0,dw,dh)
+  }else{
+    ctx.drawImage(img,sx,sy,sw,sh,dx,dy,dw,dh)
+  }
+  // optional colour tint (multiply via globalCompositeOperation)
+  if(tint){
+    ctx.globalCompositeOperation='multiply'; ctx.globalAlpha=0.35
+    ctx.fillStyle=tint; ctx.fillRect(flip?0:dx,dy,dw,dh)
+  }
+  ctx.restore()
+}
+
+// ══════════════════════════════════════════════════════════════
+//  FIGHTER CLASS
+// ══════════════════════════════════════════════════════════════
+class Fighter{
+  constructor(n,x,y,img,frames,name,flip,accentCol,splitX){
+    this.n=n; this.x=x; this.y=y; this.img=img
+    this.frames=frames; this.name=name; this.flip=flip
+    this.col=accentCol; this.splitX=splitX
+    this.vY=0; this.gnd=true; this.hp=MAX_HP; this.alive=true
+    this.state='idle'; this.fi=0; this.ft=0; this.done=false
+    this.combo=0; this.ct=0; this.stun=0
+    this.inp={L:0,R:0,U:0,lgt:0,hvy:0,sp:0,blk:0}
+    this.ar=null; this.hitDone=false; this.spawnProj=false; this.shk=0
+    this.rect={x:x-38,y:y-185,w:76,h:185}
+    // which frame-set maps to which game state
+    this.stateMap={
+      idle:'idle', walk:'walk', jump:'jump', block:'guard',
+      hit:'hit',   dead:'ko',
+      light:'punch', heavy:'slash_h', special:'sp1'
+    }
+  }
+
+  /* ── helpers ──────────────────────────────────────────── */
+  fc(state){
+    const key=this.stateMap[state]||state
+    return (this.frames[key]||this.frames.idle||[[0,0,1,1]]).length
+  }
+  getFrame(state,fi){
+    const key=this.stateMap[state]||state
+    const arr=this.frames[key]||this.frames.idle||[[0,0,60,80]]
+    return arr[Math.min(fi,arr.length-1)]
+  }
+
+  setState(s){
+    if(s===this.state) return
+    if((PRIO[s]||0)<(PRIO[this.state]||0)) return
+    this.state=s; this.fi=0; this.ft=0; this.done=false; this.ar=null; this.hitDone=false
+  }
+
+  update(dt){
+    if(!this.alive){this.adv(dt,'dead',false);return}
+    this.ct+=dt; if(this.ct>COMBO_WIN) this.combo=0
+    if(this.stun>0){this.stun-=dt; if(this.stun<=0){this.stun=0;this.setState('idle')}}
+    if(!this.gnd) this.vY+=GRAV
+    this.y+=this.vY
+    if(this.y>=FLOOR_Y){this.y=FLOOR_Y;this.vY=0;this.gnd=true}
+    this.x=Math.max(70,Math.min(W-70,this.x))
+    this.rect={x:this.x-38,y:this.y-185,w:76,h:185}
+    if(this.state==='hit'||this.state==='dead'){this.adv(dt,this.state,false);return}
+    this.doInput(); this.adv(dt,this.state); this.updAR()
+  }
+
+  doInput(){
+    const i=this.inp,s=this.state
+    if(['light','heavy','special'].includes(s)){if(!this.done)return;this.setState('idle');return}
+    if(i.blk){this.setState('block');return}
+    if(i.sp&&this.gnd){this.setState('special');this.hitDone=false;this.spawnProj=false;return}
+    if(i.hvy&&this.gnd){this.setState('heavy');this.hitDone=false;return}
+    if(i.lgt){this.setState('light');this.hitDone=false;return}
+    if(i.U&&this.gnd){this.vY=JMP;this.gnd=false;this.setState('jump');return}
+    if(!this.gnd){this.setState('jump');return}
+    const dx=(i.R?SPD:0)-(i.L?SPD:0)
+    if(dx){this.x+=dx;this.setState('walk')}else this.setState('idle')
+  }
+
+  adv(dt,sk,loop=true){
+    const ms=ANIM_MS[sk]||120, fc=this.fc(sk)
+    this.ft+=dt
+    if(this.ft>=ms){
+      this.ft-=ms; this.fi++
+      if(this.fi>=fc){
+        if(loop) this.fi=0
+        else{this.fi=fc-1;this.done=true;if(sk==='dead')this.alive=false}
+      }
+    }
+  }
+
+  updAR(){
+    this.ar=null
+    const af=ACTIVE[this.state]; if(!af) return
+    if(this.fi<af[0]||this.fi>af[1]) return
+    const d=this.flip?-1:1
+    const[w,h]=this.state==='light'?[115,85]:this.state==='heavy'?[145,105]:[165,130]
+    const ax=this.rect.x+(d===1?this.rect.w+8:-w-8), ay=this.rect.y+28
+    this.ar={x:ax,y:ay,w,h}
+    if(this.state==='special'&&this.fi===3) this.spawnProj=true
+  }
+
+  takeHit(dmg,from){
+    if(!this.alive||this.state==='dead') return
+    if(this.state==='block') dmg=DMG.block
+    this.hp=Math.max(0,this.hp-dmg); this.shk=from==='heavy'?6:3
+    if(this.hp<=0){this.alive=false;this.state='dead';this.fi=0;this.ft=0;this.done=false}
+    else{this.stun=from==='heavy'?360:210;this.state='hit';this.fi=0;this.ft=0;this.done=false}
+  }
+
+  regHit(){this.ct=0;this.combo++}
+
+  draw(){
+    if(!this.img) return
+    const frame=this.getFrame(this.state,this.fi)
+    // Flash red on hit
+    const tint=(this.state==='hit')? '#ff4444':null
+    drawFrame(this.img,frame,this.x,this.y,SCALE,this.flip,tint)
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  PROJECTILES
+// ══════════════════════════════════════════════════════════════
+const FURNS=['chair','table','barrel','vase']
+
+class Proj{
+  constructor(x,y,dir,type='furniture',col='#c8a01e'){
+    this.x=x;this.y=y;this.vx=dir*13;this.vy=-9
+    this.rot=0;this.rs=dir*6;this.col=col
+    this.type=type; this.ftype=FURNS[Math.random()*4|0]
+    this.rect={x,y,w:74,h:65};this.active=true;this.hitTarget=false
+    this.trail=[]
+  }
+  update(){
+    this.trail.push({x:this.x+37,y:this.y+32,a:1})
+    if(this.trail.length>8) this.trail.shift()
+    this.trail.forEach(t=>{t.a-=0.12})
+    this.vy+=GRAV*0.55; this.x+=this.vx; this.y+=this.vy; this.rot+=this.rs
+    this.rect={x:this.x,y:this.y,w:74,h:65}
+    if(this.y>FLOOR_Y+90||this.x<-250||this.x>W+250) this.active=false
+  }
+  draw(){
+    if(!this.active) return
+    // trail
+    this.trail.forEach(t=>{
+      ctx.save(); ctx.globalAlpha=t.a*0.4; ctx.fillStyle=this.col
+      ctx.beginPath(); ctx.arc(t.x,t.y,10,0,Math.PI*2); ctx.fill(); ctx.restore()
+    })
+    ctx.save(); ctx.translate(this.x+37,this.y+32); ctx.rotate(this.rot*Math.PI/180)
+    if(this.type==='furniture') drawFurn(ctx,this.ftype)
+    else drawShuriken(ctx,this.col)
+    ctx.restore()
+  }
+}
+
+// draw furniture centred at (0,0)
+function drawFurn(c,type){
+  const r=(col,x,y,w,h)=>{c.fillStyle=col;c.fillRect(x,y,w,h)}
+  if(type==='chair'){
+    r('#8c5a28',-18,-5,36,10); r('#784a22',-14,5,5,20); r('#9,5,5,20')
+    r('#784a22',9,5,5,20); r('#8c5a28',-18,-24,6,21); r('#8c5a28',12,-24,6,21)
+    r('#8c5a28',-18,-24,36,6); r('#6e4519',-8,12,16,4)
+  }else if(type==='table'){
+    r('#8c5a28',-35,-6,70,11); r('#784a22',-32,5,5,25); r('#784a22',27,5,5,25)
+    r('#784a22',-10,5,5,25); r('#784a22',5,5,5,25); r('#784a22',-32,16,64,4)
+  }else if(type==='barrel'){
+    c.beginPath();c.arc(0,0,28,0,Math.PI*2);c.fillStyle='#a0642d';c.fill()
+    r('#503214',-28,-12,56,5); r('#503214',-28,3,56,5); r('#503214',-28,18,56,5)
+  }else{
+    c.beginPath();c.ellipse(0,0,18,26,0,0,Math.PI*2);c.fillStyle='#b47828';c.fill()
+    r('#b47828',-12,-26,24,10); r('#a06420',-10,-24,20,8)
+  }
+}
+
+// draw shuriken star centred at (0,0)
+function drawShuriken(c,col){
+  c.fillStyle=col
+  for(let i=0;i<4;i++){
+    c.save(); c.rotate(i*Math.PI/2)
+    c.beginPath(); c.moveTo(0,-18); c.lineTo(5,-5); c.lineTo(18,0); c.lineTo(5,5)
+    c.lineTo(0,18); c.lineTo(-3,6); c.lineTo(-10,10); c.lineTo(-4,0)
+    c.lineTo(-10,-10); c.lineTo(-3,-6); c.closePath(); c.fill(); c.restore()
+  }
+  c.fillStyle='#fff'; c.beginPath(); c.arc(0,0,4,0,Math.PI*2); c.fill()
+}
+
+// ══════════════════════════════════════════════════════════════
+//  HIT EFFECTS
+// ══════════════════════════════════════════════════════════════
+class Effect{
+  constructor(x,y,heavy=false,col=C.hitLight){
+    this.x=x;this.y=y;this.heavy=heavy;this.col=col;this.t=0;this.life=heavy?400:240
+    this.sparks=Array.from({length:heavy?20:12},()=>[Math.random()*360,3+Math.random()*(heavy?10:6)])
+    this.petals=heavy?Array.from({length:8},()=>({
+      x:0,y:0,vx:(Math.random()-0.5)*6,vy:-4-Math.random()*4,r:Math.random()*4+2,a:1
+    })):[]
+  }
+  get dead(){return this.t>=this.life}
+  update(dt){
+    this.t+=dt
+    this.petals.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=0.2;p.a-=0.02})
+  }
+  draw(){
+    const p=this.t/this.life,a=1-p,sp=p*(this.heavy?90:55)
+    const col=this.col
+    // ring
+    const rr=sp*0.6|0
+    if(rr>3){
+      ctx.save();ctx.globalAlpha=a*0.6;ctx.strokeStyle=col;ctx.lineWidth=this.heavy?4:3
+      ctx.beginPath();ctx.arc(this.x,this.y,rr,0,Math.PI*2);ctx.stroke();ctx.restore()
+    }
+    // core flash
+    if(p<0.25){
+      ctx.save();ctx.globalAlpha=(0.25-p)/0.25*0.8;ctx.fillStyle=col
+      ctx.beginPath();ctx.arc(this.x,this.y,this.heavy?28:16,0,Math.PI*2);ctx.fill();ctx.restore()
+    }
+    // sparks
+    this.sparks.forEach(([ang,spd])=>{
+      const rad=ang*Math.PI/180,ex=this.x+Math.cos(rad)*spd*sp*0.28,ey=this.y+Math.sin(rad)*spd*sp*0.28
+      const sz=Math.max(1,3.5*(1-p))
+      ctx.save();ctx.globalAlpha=a;ctx.fillStyle=col
+      ctx.beginPath();ctx.arc(ex,ey,sz,0,Math.PI*2);ctx.fill();ctx.restore()
+    })
+    // petals (Kurenai)
+    this.petals.forEach(p2=>{
+      ctx.save();ctx.globalAlpha=Math.max(0,p2.a)
+      ctx.fillStyle=this.col;ctx.beginPath()
+      ctx.ellipse(this.x+p2.x,this.y+p2.y,p2.r*2,p2.r,Math.random()*Math.PI,0,Math.PI*2)
+      ctx.fill();ctx.restore()
+    })
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  DOJO BACKGROUND  (procedural – same as before, but nicer)
+// ══════════════════════════════════════════════════════════════
+let bgCanvas=null
+function buildBG(nightMode=false){
+  bgCanvas=document.createElement('canvas'); bgCanvas.width=W; bgCanvas.height=H
+  const c=bgCanvas.getContext('2d')
+  const skyCol=nightMode?'#1a0a2e':'#d2b99b'
+  c.fillStyle=skyCol; c.fillRect(0,0,W,H)
+  // shoji panels
+  const panelCol=nightMode?'#1e1535':'#ebe0be'
+  const gridCol =nightMode?'#3a2550':'#a07846'
+  for(let i=0;i<4;i++){
+    const wx=60+i*290
+    c.fillStyle=panelCol; c.fillRect(wx,55,242,355)
+    c.strokeStyle=gridCol; c.lineWidth=4; c.strokeRect(wx,55,242,355)
+    c.lineWidth=2
+    for(let rr=0;rr<5;rr++){c.beginPath();c.moveTo(wx,55+rr*72);c.lineTo(wx+242,55+rr*72);c.stroke()}
+    for(let cc=0;cc<4;cc++){c.beginPath();c.moveTo(wx+cc*61,55);c.lineTo(wx+cc*61,410);c.stroke()}
+  }
+  // moon (night mode)
+  if(nightMode){
+    const grd=c.createRadialGradient(1100,80,0,1100,80,90)
+    grd.addColorStop(0,'rgba(240,230,190,0.9)'); grd.addColorStop(1,'rgba(240,230,190,0)')
+    c.fillStyle=grd; c.beginPath(); c.arc(1100,80,90,0,Math.PI*2); c.fill()
+  }
+  // kanji scroll
+  c.fillStyle=nightMode?'#2a1d40':'#e6d7b4'
+  c.fillRect(1062,78,100,340); c.strokeStyle='#8c6437'; c.lineWidth=3; c.strokeRect(1062,78,100,340)
+  c.fillStyle='#3c2810'; c.font='bold 36px serif'; c.textAlign='center'
+  c.fillText('忍',1112,152); c.fillText('者',1112,208); c.fillText('道',1112,264)
+  // ceiling beams
+  for(let bx=0;bx<W;bx+=160) c.fillRect(bx,0,30,58)
+  c.fillStyle=nightMode?'#0e0a1a':'#643c1e'; c.fillRect(0,48,W,20)
+  // cherry trees
+  rng32=mulb(42); cherryTree(c,85,490,nightMode); rng32=mulb(99); cherryTree(c,1225,510,nightMode)
+  // floor
+  c.fillStyle=nightMode?'#2a1505':'#a06432'; c.fillRect(0,FLOOR_Y,W,H-FLOOR_Y)
+  c.strokeStyle=nightMode?'#3a2010':'#8c5028'; c.lineWidth=2
+  for(let px=0;px<W;px+=90){c.beginPath();c.moveTo(px,FLOOR_Y);c.lineTo(px,H);c.stroke()}
+  c.lineWidth=1
+  for(let rr=0;rr<H-FLOOR_Y;rr+=40){c.beginPath();c.moveTo(0,FLOOR_Y+rr);c.lineTo(W,FLOOR_Y+rr);c.stroke()}
+  c.fillStyle=nightMode?'#6a3820':'#b97840'; c.fillRect(0,FLOOR_Y,W,6)
+  // floor shadow gradient
+  const grd=c.createLinearGradient(0,FLOOR_Y-30,0,FLOOR_Y+20)
+  grd.addColorStop(0,'rgba(0,0,0,0.55)'); grd.addColorStop(1,'rgba(0,0,0,0)')
+  c.fillStyle=grd; c.fillRect(0,FLOOR_Y-30,W,50)
+  // petals
+  rng32=mulb(7)
+  for(let i=0;i<50;i++){
+    const px2=rng32()*W,py=80+rng32()*(FLOOR_Y-100),ps=3+rng32()*5
+    c.save();c.globalAlpha=0.45+rng32()*0.5
+    c.fillStyle=nightMode?'#c864c8':'#ffb4c8'
+    c.beginPath();c.ellipse(px2,py,ps*2,ps,rng32()*Math.PI,0,Math.PI*2);c.fill();c.restore()
+  }
+}
+let rng32
+function mulb(s){let seed=s;return()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function cherryTree(c,cx,by,night){
+  c.fillStyle=night?'#2a1228':'#5a3720'; c.fillRect(cx-12,by-252,24,252)
+  c.fillStyle=night?'#3a1838':'#6e4a28'; c.fillRect(cx-12,by-252,8,252)
+  c.strokeStyle=night?'#2a1228':'#5a3720'; c.lineWidth=8
+  [[cx,by-222,cx-82,by-312],[cx,by-202,cx+62,by-292],[cx,by-172,cx-52,by-242]]
+    .forEach(([x1,y1,x2,y2])=>{c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke()})
+  const bc=night?'#802880':'#fab0b9', bc2=night?'#a030a0':'#ffb9cd'
+  [[cx-82,by-342,72],[cx+52,by-322,67],[cx-22,by-372,82],
+   [cx-52,by-282,57],[cx+22,by-302,60],[cx,by-424,77]]
+    .forEach(([bx,bby,br])=>{
+      c.beginPath();c.arc(bx,bby,br,0,Math.PI*2);c.fillStyle=bc;c.fill()
+      c.beginPath();c.arc(bx-10,bby-10,br/2,0,Math.PI*2);c.fillStyle=bc2;c.fill()
+    })
+}
+
+// ══════════════════════════════════════════════════════════════
+//  HUD
+// ══════════════════════════════════════════════════════════════
+function stxt(font,text,col,x,y,align='left'){
+  ctx.font=font; ctx.textAlign=align
+  ctx.fillStyle='rgba(0,0,0,0.8)'; ctx.fillText(text,x+2,y+2)
+  ctx.fillStyle=col; ctx.fillText(text,x,y)
+}
+function barGrad(x,y,w,h,c1,c2){
+  if(w<=0)return
+  const g=ctx.createLinearGradient(x,0,x+w,0)
+  g.addColorStop(0,c1);g.addColorStop(1,c2)
+  ctx.fillStyle=g; ctx.fillRect(x,y,w,h)
+}
+function drawHUD(p1,p2,ms){
+  const bW=460,bH=26,bY=18
+  // P1
+  ctx.fillStyle=C.frame; ctx.beginPath(); ctx.roundRect(26,bY-4,bW+8,bH+8,4); ctx.fill()
+  ctx.fillStyle=C.hpBg;  ctx.fillRect(30,bY,bW,bH)
+  barGrad(30,bY,bW*p1.hp/MAX_HP|0,bH,C.hpGrn,C.hpGld)
+  stxt('bold 22px sans-serif',p1.name,C.txt,30,bY+bH+22)
+  // P2
+  const p2x=W-30-bW
+  ctx.fillStyle=C.frame; ctx.beginPath(); ctx.roundRect(p2x-4,bY-4,bW+8,bH+8,4); ctx.fill()
+  ctx.fillStyle=C.hpBg;  ctx.fillRect(p2x,bY,bW,bH)
+  const pw=bW*p2.hp/MAX_HP|0
+  barGrad(p2x+bW-pw,bY,pw,bH,C.hpRed,'#f06418')
+  stxt('bold 22px sans-serif',p2.name,C.txt,W-30,bY+bH+22,'right')
+  // Timer
+  const secs=Math.max(0,Math.floor(ms/1000))
+  stxt('bold 68px sans-serif',String(secs).padStart(2,'0'),secs<=10?'#ff5028':C.txt,W/2,76,'center')
+  // Combos
+  if(p1.combo>=2){
+    stxt('bold 38px sans-serif',''+p1.combo,p1.col||C.cmb,30,bY+bH+58)
+    stxt('bold 20px sans-serif',' COMBO!',p1.col||C.cmb,70,bY+bH+58)
+  }
+  if(p2.combo>=2){
+    stxt('bold 38px sans-serif',''+p2.combo,p2.col||C.cmb,W-30,bY+bH+58,'right')
+    stxt('bold 20px sans-serif','COMBO! ',p2.col||C.cmb,W-72,bY+bH+58,'right')
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  OVERLAP
+// ══════════════════════════════════════════════════════════════
+function ov(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y}
+
+// ══════════════════════════════════════════════════════════════
+//  GAME STATE
+// ══════════════════════════════════════════════════════════════
+const GS={MENU:'menu',FIGHT:'fight',RE:'re',GO:'go'}
+let gs=GS.MENU, p1,p2, rt=ROUND_S*1000, projs=[], efxs=[]
+let shF=0,shX=0,shY=0, wtxt='', ret=0, w1=0,w2=0
+let debugMode=false, nightMode=false
+
+// stored sprite data
+let kikeImg=null, kurenaiImg=null
+let kikeFrames={}, kurenaiFrames={}
+let kikeReady=false, kurenaiReady=false
+
+function newFighters(){
+  p1=new Fighter(1,310,FLOOR_Y,kikeImg,kikeFrames,'KIKE  •  UA NINJA',false,'#50ff80',550)
+  p2=new Fighter(2,970,FLOOR_Y,kurenaiImg,kurenaiFrames,'KURENAI',true,'#c050ff',550)
+  // map heavy to slash_h for both, special to sp1 (kaze/shuriken)
+  // Kike's special (O) = sp1 = kaze_slash in the sheet
+  // Kurenai's special (KP2) = sp1 = shuriken_flurry
+}
+
+// ══════════════════════════════════════════════════════════════
+//  INPUT
+// ══════════════════════════════════════════════════════════════
+const K={}
+addEventListener('keydown',e=>{K[e.code]=true; handleMenu(e)})
+addEventListener('keyup',  e=>{K[e.code]=false})
+function handleMenu(e){
+  if(e.code==='KeyG'){ nightMode=!nightMode; buildBG(nightMode) }
+  if(e.code==='KeyD'){ debugMode=!debugMode }
+  if(e.code!=='Enter') return
+  if(gs===GS.MENU){startFight()}
+  else if(gs===GS.RE||gs===GS.GO){
+    if(gs===GS.GO){w1=0;w2=0;gs=GS.MENU}
+    else startFight()
+  }
+}
+function startFight(){newFighters();rt=ROUND_S*1000;projs=[];efxs=[];shF=0;gs=GS.FIGHT}
+
+function readInput(){
+  p1.inp={L:K.KeyA,R:K.KeyD,U:K.KeyW,lgt:K.KeyU,hvy:K.KeyI,sp:K.KeyO,blk:K.KeyP}
+  p2.inp={L:K.ArrowLeft,R:K.ArrowRight,U:K.ArrowUp,lgt:K.Numpad1,hvy:K.Numpad3,sp:K.Numpad2,blk:K.Numpad0}
+}
+
+// ══════════════════════════════════════════════════════════════
+//  MENU SCREEN
+// ══════════════════════════════════════════════════════════════
+function drawMenu(){
+  if(bgCanvas) ctx.drawImage(bgCanvas,0,0)
+  else{ctx.fillStyle='#0d0608';ctx.fillRect(0,0,W,H)}
+  ctx.save();ctx.globalAlpha=bgCanvas?0.55:1;ctx.fillStyle='#050208';ctx.fillRect(0,0,W,H);ctx.restore()
+
+  // Draw character previews if sprites ready
+  if(kikeReady&&kikeFrames.idle){
+    const fr=kikeFrames.idle[0]
+    drawFrame(kikeImg,fr,360,H/2+80,SCALE*1.1,false)
+  }
+  if(kurenaiReady&&kurenaiFrames.idle){
+    const fr=kurenaiFrames.idle[0]
+    drawFrame(kurenaiImg,fr,920,H/2+80,SCALE*1.1,true)
+  }
+
+  stxt('bold 86px sans-serif','KIKEFIGHT','#ffd428',W/2,185,'center')
+  stxt('bold 32px sans-serif','— Presiona ENTER para jugar —',C.txt,W/2,270,'center')
+
+  // P1 controls
+  stxt('bold 26px sans-serif','KIKE  •  UA NINJA','#50ff80',W/2-300,340,'center')
+  const lc=['Mover: A / D    Saltar: W','Ataque leve: U    Ataque fuerte: I',
+            '🪑 Lanzar mueble: O    Bloquear: P']
+  lc.forEach((t,i)=>stxt('20px sans-serif',t,C.txt,115,380+i*32))
+
+  // P2 controls
+  stxt('bold 26px sans-serif','KURENAI','#c050ff',W/2+300,340,'center')
+  const rc=['Mover: ← →    Saltar: ↑','Leve: KP1    Fuerte: KP3',
+            '🌸 Shurikens: KP2    Bloquear: KP0']
+  rc.forEach((t,i)=>stxt('20px sans-serif',t,C.txt,W-115,380+i*32,'right'))
+
+  stxt('20px sans-serif','Best of 3  •  99s  •  G = modo noche  •  D = debug','#c8b496',W/2,620,'center')
+}
+
+// ══════════════════════════════════════════════════════════════
+//  DEBUG OVERLAY  (press D)
+//  Shows sprite-sheet frame boundaries on top of screen
+// ══════════════════════════════════════════════════════════════
+function drawDebug(){
+  if(!debugMode) return
+  const drawSheet=(img,frames,offX,offY,label)=>{
+    if(!img) return
+    ctx.save(); ctx.translate(offX,offY); ctx.scale(0.35,0.35)
+    ctx.drawImage(img,0,0)
+    ctx.strokeStyle='#ff0'; ctx.lineWidth=2; ctx.font='10px monospace'
+    Object.entries(frames).forEach(([name,farr])=>{
+      farr.forEach(([sx,sy,sw,sh],i)=>{
+        ctx.strokeStyle=['#f00','#0f0','#08f','#ff0','#f0f','#0ff'][i%6]
+        ctx.strokeRect(sx,sy,sw,sh)
+        ctx.fillStyle=ctx.strokeStyle; ctx.fillText(name+i,sx+2,sy+12)
+      })
+    })
+    ctx.restore()
+    stxt('bold 14px monospace',label,'#ff0',offX+4,offY+14)
+  }
+  drawSheet(kikeImg,kikeFrames,10,200,'KIKE SHEET')
+  drawSheet(kurenaiImg,kurenaiFrames,W/2+10,200,'KURENAI SHEET')
+}
+
+// ══════════════════════════════════════════════════════════════
+//  MAIN LOOP
+// ══════════════════════════════════════════════════════════════
+let last=0
+function loop(ts){
+  const dt=Math.min(ts-last,50); last=ts
+  requestAnimationFrame(loop)
+
+  // MENU
+  if(gs===GS.MENU){drawMenu();return}
+
+  // FIGHT UPDATE
+  if(gs===GS.FIGHT){
+    readInput()
+    p1.flip=p1.x>p2.x; p2.flip=p2.x<p1.x
+    p1.update(dt); p2.update(dt)
+
+    // hit detection
+    for(const[atk,def]of[[p1,p2],[p2,p1]]){
+      if(atk.ar&&!atk.hitDone&&ov(atk.ar,def.rect)){
+        const dmg=DMG[atk.state]||DMG.light
+        def.takeHit(dmg,atk.state); atk.hitDone=true; atk.regHit()
+        const ex=(atk.ar.x+atk.ar.w/2+def.rect.x+def.rect.w/2)/2
+        const ey=def.rect.y+def.rect.h/3
+        const heavy=atk.state!=='light'
+        const hitCol=atk===p1?C.kiFx:C.purpFx
+        efxs.push(new Effect(ex,ey,heavy,hitCol))
+        shF=heavy?8:4
+      }
+    }
+
+    // special projectile spawn
+    for(const f of[p1,p2]){
+      if(f.spawnProj){
+        f.spawnProj=false
+        const d=f.flip?-1:1
+        if(f===p1){
+          // Kike: furniture throw
+          projs.push(new Proj(f.x+d*60,f.y-130,d,'furniture',C.kiFx))
+        }else{
+          // Kurenai: 3 shurikens fan
+          for(let i=-1;i<=1;i++){
+            const p=new Proj(f.x+d*50,f.y-120-i*30,d,'shuriken',C.purpFx)
+            p.vy=-8+i*3; p.vx=d*14+i*2; projs.push(p)
+          }
+        }
+      }
+    }
+
+    // projectile update & hit
+    for(let i=projs.length-1;i>=0;i--){
+      const pj=projs[i]; pj.update()
+      if(!pj.active){projs.splice(i,1);continue}
+      if(!pj.hitTarget){
+        for(const t of[p1,p2]){
+          if(ov(pj.rect,t.rect)){
+            t.takeHit(DMG.special,'heavy'); pj.hitTarget=true; pj.active=false
+            const hitCol=t===p2?C.kiFx:C.purpFx
+            efxs.push(new Effect(pj.rect.x+37,pj.rect.y+32,true,hitCol))
+            shF=7; const atk=t===p1?p2:p1; atk.regHit(); break
+          }
+        }
+      }
+    }
+
+    // effects
+    for(let i=efxs.length-1;i>=0;i--){efxs[i].update(dt);if(efxs[i].dead)efxs.splice(i,1)}
+
+    // screen shake
+    if(shF>0){shF--;shX=(Math.random()*8-4)|0;shY=(Math.random()*6-3)|0}
+    else{shX=0;shY=0}
+
+    // timer
+    rt-=dt
+    if(rt<=0){
+      rt=0
+      wtxt=p1.hp>p2.hp?'KIKE WINS!':p2.hp>p1.hp?'KURENAI WINS!':'DRAW!'
+      if(wtxt==='KIKE WINS!')w1++;else if(wtxt==='KURENAI WINS!')w2++
+      ret=2600;gs=GS.RE
+    }
+    // KO
+    for(const[dead,wt]of[[p1,'KURENAI WINS!'],[p2,'KIKE WINS!']]){
+      if(!dead.alive&&gs===GS.FIGHT){
+        wtxt=wt; if(wt==='KIKE WINS!')w1++;else w2++; ret=3200;gs=GS.RE
+      }
+    }
+  }
+
+  if(gs===GS.RE){ret-=dt;if(ret<=0){if(w1>=2||w2>=2)gs=GS.GO;else startFight()}}
+
+  // ── RENDER ─────────────────────────────────────────────────
+  if(bgCanvas) ctx.drawImage(bgCanvas,shX,shY)
+  else{ctx.fillStyle='#0d0608';ctx.fillRect(0,0,W,H)}
+
+  if(p1&&p2){
+    // floor shadows
+    for(const f of[p1,p2]){
+      const sw=Math.max(0,55*(1-Math.max(0,(FLOOR_Y-f.y)/180)))|0
+      if(sw>8){
+        ctx.save();ctx.globalAlpha=0.22;ctx.fillStyle='#000'
+        ctx.beginPath();ctx.ellipse(f.x+shX,FLOOR_Y+shY-4,sw,11,0,0,Math.PI*2);ctx.fill();ctx.restore()
+      }
+    }
+
+    projs.forEach(pj=>pj.draw())
+    p1.draw(); p2.draw()
+    efxs.forEach(e=>e.draw())
+    drawHUD(p1,p2,rt)
+
+    // win dots
+    for(let i=0;i<2;i++){
+      ctx.fillStyle=i<w1?C.hpGrn:'#3c3c3c'; ctx.beginPath();ctx.arc(30+i*22,90,8,0,Math.PI*2);ctx.fill()
+      ctx.fillStyle=i<w2?C.hpRed:'#3c3c3c'; ctx.beginPath();ctx.arc(W-30-i*22,90,8,0,Math.PI*2);ctx.fill()
+    }
+  }
+
+  // overlays
+  if(gs===GS.RE||gs===GS.GO){
+    ctx.save();ctx.globalAlpha=0.6;ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);ctx.restore()
+    const ko=!p1?.alive||!p2?.alive
+    const isKike=wtxt.includes('KIKE')
+    const mainC=ko?(isKike?C.kiFx:C.purpFx):C.txt
+    const main=gs===GS.GO?(w1>=2?'🥷 KIKE ES CAMPEÓN!':'🌸 KURENAI ES CAMPEONA!'):wtxt
+    const sub=gs===GS.GO?'ENTER para reiniciar':(ko?'— K.O. ! —':'— TIME! —')
+    stxt('bold 76px sans-serif',main,mainC,W/2,H/2-10,'center')
+    stxt('bold 42px sans-serif',sub,'#e6c87a',W/2,H/2+55,'center')
+    if(gs===GS.GO) stxt('26px sans-serif','Presiona ENTER',C.txt,W/2,H/2+108,'center')
+  }
+
+  drawDebug()
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ASSET LOADING
+// ══════════════════════════════════════════════════════════════
+const bar=document.getElementById('bar')
+const loadMsg=document.getElementById('load-msg')
+let loaded=0
+
+function assetDone(which, img, label){
+  loaded++
+  bar.style.width=(loaded/2*100)+'%'
+  loadMsg.textContent=label+' ✓'
+
+  const groups=detectSpriteGroups(img)
+
+  if(which==='kike'){
+    kikeImg=img
+    // The Kike sheet has attack columns split around x=430 (left=normales, right=especiales)
+    // The sheet is ~1340px wide; specials start near the 435px mark
+    const splitX=Math.round(img.naturalWidth*0.32)
+    kikeFrames=mapFrames(groups,splitX)
+    // remap state→frames for clarity
+    kikeFrames.idle =kikeFrames.idle||[[0,0,60,80],[60,0,60,80]]
+    kikeFrames.walk =kikeFrames.walk||kikeFrames.idle
+    kikeFrames.guard=kikeFrames.guard||kikeFrames.idle
+    kikeReady=true
+  }else{
+    kurenaiImg=img
+    const splitX=Math.round(img.naturalWidth*0.32)
+    kurenaiFrames=mapFrames(groups,splitX)
+    kurenaiFrames.idle =kurenaiFrames.idle||[[0,0,60,80],[60,0,60,80]]
+    kurenaiFrames.walk =kurenaiFrames.walk||kurenaiFrames.idle
+    kurenaiFrames.guard=kurenaiFrames.guard||kurenaiFrames.idle
+    kurenaiReady=true
+  }
+
+  if(loaded===2){
+    buildBG(nightMode)
+    document.getElementById('loader').style.display='none'
+    requestAnimationFrame(loop)
+  }
+}
+
+function assetFail(which){
+  loaded++
+  bar.style.width=(loaded/2*100)+'%'
+  loadMsg.textContent='⚠ '+which+' no encontrado — usando fallback'
+  // create 1×1 transparent placeholder so the game still runs
+  const fc=document.createElement('canvas'); fc.width=60; fc.height=80
+  const placeholder=new Image(); placeholder.src=fc.toDataURL()
+  const emptyFrames={idle:[[0,0,60,80]],walk:[[0,0,60,80]],guard:[[0,0,60,80]],
+    hit:[[0,0,60,80]],ko:[[0,0,60,80]],jump:[[0,0,60,80]],run:[[0,0,60,80]],
+    punch:[[0,0,60,80]],slash_h:[[0,0,60,80]],sp1:[[0,0,60,80]]}
+  if(which==='kike'){kikeImg=placeholder;kikeFrames=emptyFrames;kikeReady=true}
+  else{kurenaiImg=placeholder;kurenaiFrames=emptyFrames;kurenaiReady=true}
+  if(loaded===2){
+    buildBG(nightMode)
+    document.getElementById('loader').style.display='none'
+    requestAnimationFrame(loop)
+  }
+}
+
+function loadImg(src,which,label){
+  const img=new Image()
+  img.onload=()=>assetDone(which,img,label)
+  img.onerror=()=>assetFail(which)
+  img.src=src
+}
+
+// ── kick off loads ────────────────────────────────────────────
+loadImg('assets/kike_sheet.png',   'kike',    'Kike UA Ninja')
+loadImg('assets/kurenai_sheet.png','kurenai', 'Kurenai')
+</script>
+</body>
+</html>

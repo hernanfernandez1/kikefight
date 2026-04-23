@@ -1,37 +1,44 @@
-# KikeFight 🥷
+# KikeFight 🥷🌸
 
-Ahora tienes una versión para jugar **directamente en la web** (sin Python).
+Juego de lucha 2D en el navegador — sin instalar nada.
 
-## Jugar en web
+## 🎮 Jugar online
+**https://hernanfernandez1.github.io/kikefight**
 
-1. Entra en la carpeta del proyecto.
-2. Levanta un servidor estático:
+*(Activar GitHub Pages: Settings → Pages → Source: main / root)*
 
-```bash
-python -m http.server 8000
-```
+---
 
-3. Abre en tu navegador: <http://localhost:8000/web/>
+## 📁 Setup de assets
 
-## Controles
+El juego carga los sprite sheets desde `assets/`.
 
-| Acción | Jugador 1 | Jugador 2 |
+1. Guardá el sprite sheet de Kike como → `assets/kike_sheet.png`
+2. Guardá el sprite sheet de Kurenai como → `assets/kurenai_sheet.png`
+
+El motor detecta los frames automáticamente. Si los archivos no están, arranca igual con placeholders.
+
+---
+
+## 🕹️ Controles
+
+| Acción | Player 1 (KIKE) | Player 2 (KURENAI) |
 |---|---|---|
 | Mover | A / D | ← / → |
 | Saltar | W | ↑ |
-| Ataque ligero | U | Numpad 1 |
-| Ataque pesado | I | Numpad 3 |
-| Especial | O | Numpad 2 |
-| Bloquear | P | Numpad 0 |
+| Ataque leve | U | KP1 |
+| Ataque fuerte | I | KP3 |
+| **🪑 Lanzar mueble** | **O** | — |
+| **🌸 Shuriken flurry** | — | **KP2** |
+| Bloquear | P | KP0 |
+| Modo noche | G | G |
+| Debug sprites | D | D |
 
-## Qué incluye la versión web
+---
 
-- Lucha 1vs1 con barra de vida y temporizador.
-- Ataques ligero/pesado/especial.
-- Proyectil en el ataque especial.
-- Rondas al mejor de 3.
-- Pantallas de menú, fin de ronda y campeón.
+## 🛠️ Local
 
-## Nota
-
-El código original en Python/Pygame se mantiene en la raíz (`main.py`, `fighter.py`, etc.) como referencia.
+```bash
+python -m http.server 8000
+# → http://localhost:8000
+```
