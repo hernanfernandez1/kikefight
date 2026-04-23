@@ -22,7 +22,7 @@ canvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
   <h1>KIKEFIGHT</h1>
   <p id="load-msg">Cargando assets…</p>
   <div id="bar-wrap"><div id="bar"></div></div>
-  <p id="hint">Coloca <b>kike_sheet.png</b> y <b>kurenai_sheet.png</b> en la carpeta <b>assets/</b></p>
+  <p id="hint">Coloca <b>kike_sheet.jpg</b> y <b>kurenai_sheet.jpg</b> en la carpeta <b>assets/</b></p>
 </div>
 
 <canvas id="c"></canvas>
@@ -74,17 +74,24 @@ addEventListener('resize',resize); resize()
 //  Scans a loaded Image for non-background pixel groups.
 //  Returns: Array of rows, each row = Array of {x,y,w,h}.
 // ══════════════════════════════════════════════════════════════
-function detectSpriteGroups(img){
+function detectSpriteGroups(img, maxXFrac=0.56){
   const tw=img.naturalWidth||img.width, th=img.naturalHeight||img.height
+  // Only scan the left portion of the sheet (gameplay sprites)
+  // Right side contains expressions, UI elements, palette swatches, etc.
+  const scanW=Math.round(tw*maxXFrac)
   const tc=document.createElement('canvas'); tc.width=tw; tc.height=th
   const tx=tc.getContext('2d'); tx.drawImage(img,0,0)
   const px=tx.getImageData(0,0,tw,th).data
 
-  const active=(x,y)=>Math.max(px[(y*tw+x)*4],px[(y*tw+x)*4+1],px[(y*tw+x)*4+2])>BG_THRESH
+  const active=(x,y)=>{
+    if(x<0||x>=tw||y<0||y>=th) return false
+    const i=(y*tw+x)*4
+    return Math.max(px[i],px[i+1],px[i+2])>BG_THRESH
+  }
 
-  // active rows
+  // active rows (only within scanW columns)
   const rowA=new Uint8Array(th)
-  for(let y=0;y<th;y++) for(let x=0;x<tw;x++) if(active(x,y)){rowA[y]=1;break}
+  for(let y=0;y<th;y++) for(let x=0;x<scanW;x++) if(active(x,y)){rowA[y]=1;break}
 
   // row → horizontal bands
   const bands=[]
@@ -99,14 +106,14 @@ function detectSpriteGroups(img){
     const bh=y2-y1+1
     if(bh<MIN_SP_H) continue                   // skip thin text-label rows
 
-    // active columns inside this band
-    const colA=new Uint8Array(tw)
-    for(let x=0;x<tw;x++) for(let y=y1;y<=y2;y++) if(active(x,y)){colA[x]=1;break}
+    // active columns inside this band (within scanW)
+    const colA=new Uint8Array(scanW)
+    for(let x=0;x<scanW;x++) for(let y=y1;y<=y2;y++) if(active(x,y)){colA[x]=1;break}
 
     // column → sprite groups
     const row=[]
     let cs=-1
-    for(let x=0;x<=tw;x++){
+    for(let x=0;x<=scanW;x++){
       if(colA[x]&&cs<0) cs=x
       if(!colA[x]&&cs>=0){
         const gw=x-cs
@@ -120,47 +127,61 @@ function detectSpriteGroups(img){
 }
 
 // ── Map detected groups → named animation frames ──────────────
-// Layout for BOTH sheets (same structure):
-//   groups[0]  = PERSONAJE row   : idle×2, walk×2, guard×1
-//   groups[1]  = MOVEMENT row    : run×2, jump×1, crouch×1, hit×1, ko×1
+// Actual sheet layout (Kike & Kurenai – same structure):
+//   groups[0]  = PERSONAJE row   : idle×2, walk×1, guardia×1
+//   groups[1]  = MOVEMENT row    : correr×2, salto×1, agacharse×1, daño×1, ko×1
 //   groups[2…] = ATTACK rows (left half=normales, right half=especiales)
-//     row+0  PUÑO  /  SPECIAL_1
-//     row+1  KICK  /  SPECIAL_2
-//     row+2  SLASH_H / SPECIAL_3
-//     row+3  SLASH_V / SPECIAL_4  (Kike) / last special (Kurenai)
+//     row+0  PUÑO        /  SHINOBI DASH (or SHURIKEN FLURRY)
+//     row+1  PATADA BAJA /  KAZE SLASH (or KASUMI STEP)
+//     row+2  CORTE H     /  SOMBRA ASCENDENTE (or HANA NO MAI)
+//     row+3  CORTE V     /  CORTE HURACÁN (or KURENAI ENBU)
 function mapFrames(groups, splitX){
   const f={}
-  // ── basic states ──────────────────────────────────────────
+  // ── PERSONAJE (idle, walk, guard) ─────────────────────────
   if(groups[0]){
     const r=groups[0]
-    f.idle  = toF(r.slice(0,2))
-    f.walk  = toF(r.slice(2,4))
-    f.guard = toF(r.slice(4,5))
-    if(!f.guard.length&&r[4]) f.guard=toF([r[4]])
+    // First 2 sprites = idle poses, next = walk, next = guard
+    if(r.length>=4){
+      f.idle  = toF(r.slice(0,2))
+      f.walk  = toF(r.slice(2,3))
+      f.guard = toF(r.slice(3,4))
+    } else if(r.length>=2){
+      f.idle  = toF(r.slice(0,2))
+      f.walk  = toF(r.slice(0,2))   // reuse idle for walk if not enough
+      f.guard = toF(r.slice(1,2))
+    } else {
+      f.idle  = toF(r); f.walk=f.idle; f.guard=f.idle
+    }
   }
-  // ── movement ──────────────────────────────────────────────
+  // ── MOVEMENT (run, jump, crouch, hit, ko) ─────────────────
   if(groups[1]){
     const r=groups[1]
     f.run   = toF(r.slice(0,2))
     f.jump  = toF(r.slice(2,3))
     f.crouch= toF(r.slice(3,4))
-    f.hit   = toF(r.slice(4,5))
-    f.ko    = toF(r.slice(5,6))
-    if(!f.ko.length&&r.length>5) f.ko=toF([r[r.length-1]])
+    f.hit   = toF(r.slice(4,5).length?r.slice(4,5):r.slice(-2,-1))
+    f.ko    = toF(r.slice(5,6).length?r.slice(5,6):[r[r.length-1]].filter(Boolean))
+    if(!f.run.length&&r.length>=2) f.run=toF(r.slice(0,2))
+    if(!f.jump.length&&r[0]) f.jump=toF([r[0]])
   }
-  // ── attacks (split left/right by splitX) ──────────────────
+  // ── ATTACKS (left=normales, right=especiales split by splitX) ─
   const atkNames =['punch','kick','slash_h','slash_v']
   const spNames  =['sp1','sp2','sp3','sp4']
   for(let i=0;i<4;i++){
     const grp=groups[2+i]; if(!grp) continue
     const left =grp.filter(s=>s.x+s.w/2 < splitX)
     const right=grp.filter(s=>s.x+s.w/2 >= splitX)
-    f[atkNames[i]]=toF(left)
-    f[spNames[i]] =toF(right)
+    if(left.length)  f[atkNames[i]]=toF(left)
+    if(right.length) f[spNames[i]] =toF(right)
   }
+  // Fallbacks: make sure every needed key exists
+  const base=f.idle||[[0,0,60,80]]
+  ;['idle','walk','guard','run','jump','crouch','hit','ko',
+    'punch','kick','slash_h','slash_v','sp1','sp2','sp3','sp4'
+  ].forEach(k=>{ if(!f[k]||!f[k].length) f[k]=base })
   return f
 }
-function toF(arr){ return arr.map(s=>[s.x,s.y,s.w,s.h]) }
+function toF(arr){ return arr.filter(Boolean).map(s=>[s.x,s.y,s.w,s.h]) }
 
 // ── Draw one frame from a sprite sheet ────────────────────────
 function drawFrame(img,frame,cx,cy,scale,flip,tint=null){
@@ -773,27 +794,24 @@ function assetDone(which, img, label){
   bar.style.width=(loaded/2*100)+'%'
   loadMsg.textContent=label+' ✓'
 
-  const groups=detectSpriteGroups(img)
+  // Scan left 56% of sheet (gameplay sprites), exclude expressions/palettes/UI on right
+  const groups=detectSpriteGroups(img, 0.56)
+  // splitX within the scanned area: NORMALES ~left 53%, ESPECIALES ~53-100% of scan area
+  const scanW=Math.round((img.naturalWidth||img.width)*0.56)
+  const splitX=Math.round(scanW*0.53)
+
+  console.log(`[${which}] sheet ${img.naturalWidth}x${img.naturalHeight}, groups:`, groups.map(g=>g.length))
 
   if(which==='kike'){
     kikeImg=img
-    // The Kike sheet has attack columns split around x=430 (left=normales, right=especiales)
-    // The sheet is ~1340px wide; specials start near the 435px mark
-    const splitX=Math.round(img.naturalWidth*0.32)
     kikeFrames=mapFrames(groups,splitX)
-    // remap state→frames for clarity
-    kikeFrames.idle =kikeFrames.idle||[[0,0,60,80],[60,0,60,80]]
-    kikeFrames.walk =kikeFrames.walk||kikeFrames.idle
-    kikeFrames.guard=kikeFrames.guard||kikeFrames.idle
     kikeReady=true
+    console.log('[kike] frames:', Object.fromEntries(Object.entries(kikeFrames).map(([k,v])=>[k,v.length])))
   }else{
     kurenaiImg=img
-    const splitX=Math.round(img.naturalWidth*0.32)
     kurenaiFrames=mapFrames(groups,splitX)
-    kurenaiFrames.idle =kurenaiFrames.idle||[[0,0,60,80],[60,0,60,80]]
-    kurenaiFrames.walk =kurenaiFrames.walk||kurenaiFrames.idle
-    kurenaiFrames.guard=kurenaiFrames.guard||kurenaiFrames.idle
     kurenaiReady=true
+    console.log('[kurenai] frames:', Object.fromEntries(Object.entries(kurenaiFrames).map(([k,v])=>[k,v.length])))
   }
 
   if(loaded===2){
@@ -822,16 +840,21 @@ function assetFail(which){
   }
 }
 
-function loadImg(src,which,label){
-  const img=new Image()
-  img.onload=()=>assetDone(which,img,label)
-  img.onerror=()=>assetFail(which)
-  img.src=src
-}
-
 // ── kick off loads ────────────────────────────────────────────
-loadImg('assets/kike_sheet.png',   'kike',    'Kike UA Ninja')
-loadImg('assets/kurenai_sheet.png','kurenai', 'Kurenai')
+// Try .jpg first (real sheets), fall back to .png (user-placed copies)
+function loadImgFallback(srcs, which, label){
+  let idx=0
+  function tryNext(){
+    if(idx>=srcs.length){assetFail(which);return}
+    const img=new Image()
+    img.onload=()=>assetDone(which,img,label)
+    img.onerror=()=>{idx++;tryNext()}
+    img.src=srcs[idx++]
+  }
+  tryNext()
+}
+loadImgFallback(['assets/kike_sheet.jpg','assets/kike_sheet.png'],    'kike',    'Kike UA Ninja')
+loadImgFallback(['assets/kurenai_sheet.jpg','assets/kurenai_sheet.png'],'kurenai','Kurenai')
 </script>
 </body>
 </html>
